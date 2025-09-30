@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "prog.h": "c",
+        "stdio.h": "c"
+    }
+}
