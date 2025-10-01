@@ -1,11 +1,14 @@
+// user/rb_reader.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <errno.h>
-#include <inttypes.h>
-#include <arpa/inet.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
+#include <signal.h>
+#include <errno.h>
+#include <string.h>
+
+static volatile int exiting = 0;
 
 struct flow_event {
     __u64 ts_ns;
@@ -17,49 +20,61 @@ struct flow_event {
     __u16 dport;
 };
 
-static const char* hook_name(__u32 h) {
-    switch (h) {
-        case 1: return "TC_INGRESS";
-        case 2: return "TC_EGRESS";
-        case 3: return "NFT_CHAIN";
-        default: return "UNKNOWN";
-    }
+static void handle_sigint(int sig)
+{
+    exiting = 1;
 }
 
-static int handle_event(void *ctx, void *data, size_t len) {
-    struct flow_event *e = data;
-    printf("[%s] ts=%" PRIu64 " id=%u mark=0x%08x proto=%u sport=%u dport=%u\n",
-           hook_name(e->hook), (uint64_t)e->ts_ns, e->id, e->mark, e->proto,
-           ntohs(e->sport), ntohs(e->dport));
+static int handle_event(void *ctx, void *data, size_t len)
+{
+    const struct flow_event *e = data;
+
+    printf("[EVENT] ts=%llu id=%u mark=0x%x hook=%u proto=%u sport=%u dport=%u\n",
+           (unsigned long long)e->ts_ns,
+           e->id,
+           e->mark,
+           e->hook,
+           e->proto,
+           e->sport,
+           e->dport);
     return 0;
 }
 
-int main(int argc, char **argv) {
-    const char *rb_path = "/sys/fs/bpf/retis_rb";
-    if (argc > 1)
-        rb_path = argv[1];
+int main(int argc, char **argv)
+{
+    const char *path = "/sys/fs/bpf/retis_rb";
+    int rb_fd;
+    struct ring_buffer *rb = NULL;
 
-    int rb_map = bpf_obj_get(rb_path);
-    if (rb_map < 0) {
-        fprintf(stderr, "open ringbuf map failed at %s: %s\n", rb_path, strerror(errno));
-        fprintf(stderr, "did you pin it? (see run.sh)\n");
+    signal(SIGINT, handle_sigint);
+    signal(SIGTERM, handle_sigint);
+
+    rb_fd = bpf_obj_get(path);
+    if (rb_fd < 0) {
+        fprintf(stderr, "Failed to open ringbuf at %s: %s\n",
+                path, strerror(errno));
         return 1;
     }
 
-    struct ring_buffer *rb = ring_buffer__new(rb_map, handle_event, NULL, NULL);
+    rb = ring_buffer__new(rb_fd, handle_event, NULL, NULL);
     if (!rb) {
-        fprintf(stderr, "ring_buffer__new failed\n");
+        fprintf(stderr, "Failed to create ring buffer: %s\n",
+                strerror(errno));
         return 1;
     }
 
-    while (1) {
-        int err = ring_buffer__poll(rb, 250);
-        if (err < 0) {
-            fprintf(stderr, "ring_buffer__poll: %d\n", err);
+    printf("Listening on ringbuf %s ... (Ctrl-C to stop)\n", path);
+
+    while (!exiting) {
+        int err = ring_buffer__poll(rb, 100 /* timeout ms */);
+        if (err < 0 && errno != EINTR) {
+            fprintf(stderr, "Error polling ring buffer: %d\n", err);
             break;
         }
     }
 
     ring_buffer__free(rb);
+    close(rb_fd);
+    printf("Exiting.\n");
     return 0;
 }

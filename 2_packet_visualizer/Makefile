@@ -1,14 +1,16 @@
 # Makefile cho packet_visualizer
 
-CLANG ?= clang
-CC    ?= gcc
+CLANG   ?= clang
+LLVMS   ?= llvm-strip
+CC      ?= gcc
 
-BPF_SRC  = bpf/tag_kern.c
-BPF_OBJ  = bpf/tag_kern.o
+BPF_SRC   = bpf/tag_kern.c
+BPF_OBJ   = bpf/tag_kern.o
 USER_PROGS = user/read_map user/rb_reader
 
-CFLAGS_USER = -O2 -g -Wall
+CFLAGS_USER  = -O2 -g -Wall
 LDFLAGS_USER = -lbpf
+CFLAGS_BPF   = -O2 -g -target bpf -D__TARGET_ARCH_x86 -I bpf
 
 all: $(BPF_OBJ) $(USER_PROGS)
 
@@ -25,7 +27,8 @@ gen_vmlinux_h: bpf/vmlinux.h
 
 # ===== Build BPF object =====
 $(BPF_OBJ): $(BPF_SRC) bpf/vmlinux.h
-	$(CLANG) -O2 -g -target bpf -I bpf -c $< -o $@
+	$(CLANG) $(CFLAGS_BPF) -c $< -o $@
+	$(LLVMS) -g $@
 
 # ===== Build user-space programs =====
 user/%: user/%.c
